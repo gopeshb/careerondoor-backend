@@ -249,7 +249,7 @@ exports.verifyOTP = async (req, res) => {
     res.cookie("auth_token", token, {
       httpOnly: true,
       secure: true,
-      sameSite: "Lax",
+      sameSite: "None",
       maxAge: 1 * 60 * 60 * 1000, // 1 hour
     })
 
@@ -464,7 +464,7 @@ exports.login = async (req, res) => {
     res.cookie("auth_token", token, {
       httpOnly: true,
       secure: true,
-      sameSite: "Lax",
+      sameSite: "None",
       maxAge: 1 * 60 * 60 * 1000, // 2 hour
     })
 
