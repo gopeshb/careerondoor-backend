@@ -52,3 +52,38 @@ exports.createUser = async (req, res) => {
   }
 };
 
+exports.updateProfile = async (req, res) => {
+  try {
+    const userId = req.user.id // Extracted from authMiddleware
+    const { firstName, lastName, username } = req.body
+
+    if (!firstName || !lastName || !username) {
+      return res.status(400).json({ message: "All fields are required" })
+    }
+
+    // Check if username is taken by another user
+    const existingUser = await User.findOne({ username, _id: { $ne: userId } })
+    if (existingUser) {
+      return res.status(400).json({ message: "Username is already taken" })
+    }
+
+    // Update user
+    const updatedUser = await User.findByIdAndUpdate(
+      userId,
+      { firstName, lastName, username },
+      { new: true, runValidators: true },
+    ).select("-password") // Exclude password from response
+
+    if (!updatedUser) {
+      return res.status(404).json({ message: "User not found" })
+    }
+
+    res.status(200).json({
+      message: "Profile updated successfully",
+      user: updatedUser,
+    })
+  } catch (error) {
+    console.error("Update profile error:", error)
+    res.status(500).json({ message: "Server error", error: error.message })
+  }
+}
