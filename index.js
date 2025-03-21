@@ -16,11 +16,16 @@ dotenv.config();
 
 // Connect to MongoDB
 connectDB();
+const allowedOrigins = [
+  "http://localhost:3000",
+  "https://careerondoor-gopesh-bhatias-projects.vercel.app",
+  "https://careerondoor.vercel.app"
+];
 
 const app = express();
 app.use(
   cors({
-    origin:"https://careerondoor.vercel.app",
+    origin: allowedOrigins,
     credentials: true,
   })
 );
