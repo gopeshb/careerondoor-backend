@@ -17,7 +17,6 @@ dotenv.config();
 // Connect to MongoDB
 connectDB();
 const allowedOrigins = [
-  "http://localhost:3000",
   "https://careerondoor-gopesh-bhatias-projects.vercel.app",
   "https://careerondoor.vercel.app"
 ];
