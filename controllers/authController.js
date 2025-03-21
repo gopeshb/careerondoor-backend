@@ -242,7 +242,7 @@ exports.verifyOTP = async (req, res) => {
 
     // Generate JWT token
     const token = jwt.sign({ id: newUser._id }, process.env.JWT_SECRET, {
-      expiresIn: "2h",
+      expiresIn: "1h",
     })
 
     // Set HTTP-only cookie
@@ -250,7 +250,7 @@ exports.verifyOTP = async (req, res) => {
       httpOnly: true,
       secure: true,
       sameSite: "Lax",
-      maxAge: 2 * 60 * 60 * 1000, // 1 hour
+      maxAge: 1 * 60 * 60 * 1000, // 1 hour
     })
 
     // Return user data
@@ -465,7 +465,7 @@ exports.login = async (req, res) => {
       httpOnly: true,
       secure: true,
       sameSite: "Lax",
-      maxAge: 2 * 60 * 60 * 1000, // 2 hour
+      maxAge: 1 * 60 * 60 * 1000, // 2 hour
     })
 
     // Return user data
