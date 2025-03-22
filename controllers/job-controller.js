@@ -108,21 +108,6 @@ exports.getJobs = async (req, res) => {
   }
 }
 
-// Get a specific job by ID
-exports.getJobById = async (req, res) => {
-  try {
-    const job = await Job.findById(req.params.id).populate("companyId", "name website")
-
-    if (!job) {
-      return res.status(404).json({ message: "Job not found" })
-    }
-
-    res.json(job)
-  } catch (err) {
-    console.error("Error fetching job:", err)
-    res.status(500).json({ message: "Server error" })
-  }
-}
 
 // Create a new job
 
@@ -213,19 +198,4 @@ exports.updateJob = async (req, res) => {
   }
 }
 
-// Delete a job
-exports.deleteJob = async (req, res) => {
-  try {
-    const job = await Job.findByIdAndDelete(req.params.id)
-
-    if (!job) {
-      return res.status(404).json({ message: "Job not found" })
-    }
-
-    res.json({ message: "Job deleted successfully" })
-  } catch (err) {
-    console.error("Error deleting job:", err)
-    res.status(500).json({ message: "Server error" })
-  }
-}
 

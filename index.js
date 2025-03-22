@@ -10,6 +10,7 @@ const authRoutes = require("./routes/authRoutes");
 const companyRoutes = require("./routes/companyRoutes");
 const cookieParser = require("cookie-parser");
 const jobRoutes = require("./routes/jobRoutes");
+const internshipRoutes = require("./routes/internshipRoutes");
 
 // Load environment variables
 dotenv.config();
@@ -45,6 +46,7 @@ app.use("/api/users", userRoutes);
 app.use("/api/reviews", reviewRoutes);
 app.use("/api/companies", companyRoutes);
 app.use("/api/jobs", jobRoutes);
+app.use("/api/internships", internshipRoutes);
 
 // Error handling middleware
 app.use(errorHandler);
