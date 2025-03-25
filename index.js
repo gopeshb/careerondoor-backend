@@ -19,7 +19,7 @@ dotenv.config();
 connectDB();
 
 const allowedOrigins = [
-  "http://www.careerondoor.tech",
+  "https://www.careerondoor.tech",
   "https://careerondoor.vercel.app"
 ];
 
