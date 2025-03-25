@@ -5,14 +5,45 @@ const Review = require("../models/Review");
 // Get a company by ID
 exports.getAllCompanyNamesAndIds = async (req, res) => {
   try {
-    const companies = await Company.find({}, { _id: 1, name: 1 }); // Fetch only _id and name
+    const searchQuery = req.query.search || ""
+    let query = {}
 
-    res.status(200).json(companies);
+    // If search query is provided, use case-insensitive regex search
+    if (searchQuery) {
+      query = {
+        name: { $regex: searchQuery, $options: "i" },
+      }
+    }
+
+    // Fetch companies with pagination
+    const limit = Number.parseInt(req.query.limit) || 100
+    const page = Number.parseInt(req.query.page) || 1
+    const skip = (page - 1) * limit
+
+    const companies = await Company.find(query, { _id: 1, name: 1 })
+      .sort({ name: 1 }) // Sort alphabetically
+      .skip(skip)
+      .limit(limit)
+
+    // Get total count for pagination info
+    const total = await Company.countDocuments(query)
+
+    res.status(200).json({
+      companies,
+      pagination: {
+        total,
+        page,
+        limit,
+        pages: Math.ceil(total / limit),
+      },
+    })
   } catch (error) {
-    console.error("Error fetching company names and IDs:", error);
-    res.status(500).json({ message: "Server error", error });
+    console.error("Error fetching company names and IDs:", error)
+    res.status(500).json({ message: "Server error", error: error.message })
   }
-};
+}
+
+
 
 exports.getAllNotVerifiedCompanies = async (req, res) => {
   try {

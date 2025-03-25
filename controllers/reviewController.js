@@ -101,12 +101,13 @@ exports.addReviewToCompany = async (req, res) => {
   try {
     let { companyId, companyName, companyWebsite, workEnv, jobSec, salary, rating } = req.body;
     let userId = req.user.id;
+    
     // Validate required review fields
     if (!userId) {
       return res.status(401).json({ message: "User not authenticated" });
     }
 
-    // ✅ Ensure numeric values are valid
+    // Ensure numeric values are valid
     if ([workEnv, jobSec, salary, rating].some(val => typeof val !== "number" || isNaN(val) || val < 1)) {
       return res.status(400).json({ message: "Values for workEnv, jobSec, salary, and rating must be valid numbers (at least 1)." });
     }
@@ -114,11 +115,6 @@ exports.addReviewToCompany = async (req, res) => {
     // Validate that userId is a valid ObjectId
     if (!mongoose.Types.ObjectId.isValid(userId)) {
       return res.status(400).json({ message: "Invalid userId. Must be a valid ObjectId." });
-    }
-
-    // Ensure numeric fields are at least 1
-    if (workEnv < 1 || jobSec < 1 || salary < 1 || rating < 1) {
-      return res.status(400).json({ message: "Values for workEnv, jobSec, salary, and rating must be at least 1" });
     }
 
     let company;
@@ -129,12 +125,44 @@ exports.addReviewToCompany = async (req, res) => {
         return res.status(400).json({ message: "Either provide companyId or companyName and companyWebsite" });
       }
 
-      company = await Company.findOne({ name: companyName });
-
-      if (!company) {
-        company = await Company.create({ name: companyName, website: companyWebsite });
+      // Extract company name from URL for comparison
+      let urlCompanyName = '';
+      try {
+        const url = new URL(companyWebsite);
+        const hostname = url.hostname;
+        // Remove www. prefix if present and domain suffix
+        urlCompanyName = hostname.replace(/^www\./, '').split('.')[0];
+      } catch (error) {
+        // If URL parsing fails, use the website as is
+        urlCompanyName = companyWebsite;
       }
 
+      // Check if company exists by exact name match
+      company = await Company.findOne({ 
+        name: { $regex: new RegExp(`^${companyName}$`, 'i') } } 
+      );
+      
+      
+      if (company) {
+        return res.status(400).json({ message: `Company already exists: ${company.name}` });
+      }
+
+      // Check if company exists by URL-extracted name
+      if (urlCompanyName) {
+        company = await Company.findOne({ 
+          $or: [
+            { name: { $regex: new RegExp(`^${companyName}$`, 'i') } },
+            { name: { $regex: new RegExp(`^${urlCompanyName}$`, 'i') } }
+          ]
+        });
+        
+        if (company) {
+          return res.status(400).json({ message: `Company already exists: ${company.name}` });
+        }
+      }
+
+      // Create new company if it doesn't exist
+      company = await Company.create({ name: companyName, website: companyWebsite });
       companyId = company._id;
     } else {
       // If companyId is provided, find the company
@@ -144,7 +172,7 @@ exports.addReviewToCompany = async (req, res) => {
       }
     }
     
-    // ✅ Check if user has already reviewed the company
+    // Check if user has already reviewed the company
     const existingReview = await Review.findOne({ companyId, userId });
     if (existingReview) {
       return res.status(400).json({ message: "You have already reviewed this company." });
@@ -187,7 +215,6 @@ exports.addReviewToCompany = async (req, res) => {
     return res.status(500).json({ message: "Server Error", error: error.message });
   }
 };
-
 
 
 

@@ -11,10 +11,11 @@ const InternshipSchema = new mongoose.Schema(
       required: true, 
       index: true // Optimized indexing
     },
-    stipend: { type: String, required: true, trim: true }, // Changed to 'stipend' instead of 'expected_salary'
+    stipend: { type: String, required: true, trim: true }, 
+    duration: { type: Number, required: true, min: 1 }, // duration in months
     applylink: { type: String, required: true, trim: true },
     last_date: { type: Date, required: true },
-    description: { type: String, required: true, trim: true, maxlength: 100 }, // Max 100 characters
+    description: { type: String, required: true, trim: true, maxlength: 100 }, 
   },
   { timestamps: true }
 );

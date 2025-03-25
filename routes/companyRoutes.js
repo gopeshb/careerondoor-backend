@@ -14,7 +14,7 @@ const {
 
 const { protect } = require("../middlewares/authMiddleware");
 // Get a company by ID
-router.get("/all", getAllCompanyNamesAndIds);
+router.get("/names-and-ids", getAllCompanyNamesAndIds);
 
 router.get("/verify", getAllNotVerifiedCompanies);
 // Get top 4 companies by average rating

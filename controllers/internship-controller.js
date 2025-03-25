@@ -23,6 +23,14 @@ exports.getInternships = async (req, res) => {
       // We'll handle this in the aggregation pipeline
     }
 
+    // Duration filter
+    if (req.query.duration) {
+      const duration = Number.parseInt(req.query.duration)
+      if (!isNaN(duration)) {
+        query.duration = duration
+      }
+    }
+
     // Aggregation pipeline to include company name search
     const aggregationPipeline = [
       // Lookup to get company details
@@ -63,6 +71,7 @@ exports.getInternships = async (req, res) => {
           location: 1,
           skills_required: 1,
           stipend: 1,
+          duration: 1, // Include duration in the projection
           applylink: 1,
           description: 1,
           last_date: 1,
@@ -102,7 +111,8 @@ exports.getInternships = async (req, res) => {
 // Create a new internship
 exports.createInternship = async (req, res) => {
   try {
-    const { role, location, skills_required, companyId, stipend, applylink, last_date, description } = req.body
+    const { role, location, skills_required, companyId, stipend, duration, applylink, last_date, description } =
+      req.body
 
     // Validate required fields
     if (
@@ -111,6 +121,7 @@ exports.createInternship = async (req, res) => {
       !Array.isArray(skills_required) ||
       !companyId ||
       !stipend ||
+      !duration ||
       !applylink ||
       !last_date ||
       !description
@@ -121,6 +132,12 @@ exports.createInternship = async (req, res) => {
     // Validate ObjectId
     if (!mongoose.Types.ObjectId.isValid(companyId)) {
       return res.status(400).json({ message: "Invalid company ID" })
+    }
+
+    // Validate duration
+    const durationValue = Number.parseInt(duration)
+    if (isNaN(durationValue) || durationValue < 1) {
+      return res.status(400).json({ message: "Duration must be a positive number" })
     }
 
     // Validate last_date
@@ -139,6 +156,7 @@ exports.createInternship = async (req, res) => {
       skills_required: cleanedSkills,
       companyId,
       stipend,
+      duration: durationValue,
       applylink,
       last_date: parsedDate,
       description,
@@ -155,7 +173,8 @@ exports.createInternship = async (req, res) => {
 // Update an internship
 exports.updateInternship = async (req, res) => {
   try {
-    const { role, location, skills_required, companyId, stipend, applylink, last_date, description } = req.body
+    const { role, location, skills_required, companyId, stipend, duration, applylink, last_date, description } =
+      req.body
 
     // Process skills if provided
     if (skills_required && !Array.isArray(skills_required)) {
@@ -165,6 +184,15 @@ exports.updateInternship = async (req, res) => {
     // Validate companyId if provided
     if (companyId && !mongoose.Types.ObjectId.isValid(companyId)) {
       return res.status(400).json({ message: "Invalid company ID" })
+    }
+
+    // Validate duration if provided
+    if (duration !== undefined) {
+      const durationValue = Number.parseInt(duration)
+      if (isNaN(durationValue) || durationValue < 1) {
+        return res.status(400).json({ message: "Duration must be a positive number" })
+      }
+      req.body.duration = durationValue
     }
 
     const updatedInternship = await Internship.findByIdAndUpdate(
