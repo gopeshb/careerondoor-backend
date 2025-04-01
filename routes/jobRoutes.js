@@ -10,9 +10,15 @@ router.get("/", jobController.getJobs)
 // POST /api/jobs - Create a new job
 router.post("/",protect, jobController.createJob)
 
-// PUT /api/jobs/:id - Update a job
+router.get("/locations", jobController.getLocations)
+router.get("/:id", jobController.getJobById)
+
+// Protected routes
+router.post("/",protect, jobController.createJob)
 router.put("/:id",protect, jobController.updateJob)
+router.delete("/:id",protect, jobController.deleteJob)
 
 
+router.patch("/:id/verify", jobController.verifyJob)
 
 module.exports = router
