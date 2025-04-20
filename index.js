@@ -3,6 +3,7 @@ const dotenv = require("dotenv");
 const cors = require("cors");
 const morgan = require("morgan");
 const connectDB = require("./config/db");
+const redisClient = require("./config/redis"); // Redis client
 const userRoutes = require("./routes/userRoutes");
 const errorHandler = require("./middlewares/errorHandler");
 const reviewRoutes = require("./routes/reviewRoutes");
@@ -20,7 +21,8 @@ connectDB();
 
 const allowedOrigins = [
   "https://www.careerondoor.tech",
-  "https://careerondoor.vercel.app"
+  "https://careerondoor.vercel.app",
+  "http://localhost:3000"
 ];
 
 const app = express();

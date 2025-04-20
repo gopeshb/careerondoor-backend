@@ -1,26 +1,111 @@
-const User = require("../models/User")
-const jwt = require("jsonwebtoken")
-const bcrypt = require("bcryptjs")
-const otpGenerator = require("otp-generator")
-const nodemailer = require("nodemailer")
-require("dotenv").config()
-const crypto = require("crypto")
+const User = require("../models/User");
+const jwt = require("jsonwebtoken");
+const bcrypt = require("bcryptjs");
+const otpGenerator = require("otp-generator");
+const nodemailer = require("nodemailer");
+const winston = require("winston");
+const { RateLimiterRedis } = require("rate-limiter-flexible");
+const redis = require("../config/redis");
+const validator = require("validator");
+require("dotenv").config();
+const crypto = require("crypto");
 
-// Enhanced OTP store with expiration
-const otpStore = new Map()
+// Configure logger
+const logger = winston.createLogger({
+  level: "info",
+  format: winston.format.combine(
+    winston.format.timestamp(),
+    winston.format.json()
+  ),
+  transports: [
+    new winston.transports.Console(),
+    new winston.transports.File({ filename: "error.log", level: "error" }),
+    new winston.transports.File({ filename: "combined.log" }),
+  ],
+});
 
-// OTP configuration
-const OTP_EXPIRY_TIME = 10 * 60 * 1000 // 10 minutes in milliseconds
-const OTP_LENGTH = 6
+// Custom error class
+class AppError extends Error {
+  constructor(message, statusCode, code = "UNKNOWN") {
+    super(message);
+    this.statusCode = statusCode;
+    this.code = code;
+    this.isOperational = true;
+    Error.captureStackTrace(this, this.constructor);
+  }
+}
 
-// Store for password reset tokens
-const resetTokenStore = new Map()
+// OTP and reset token configuration
+const OTP_EXPIRY_TIME = 10 * 60; // 10 minutes in seconds
+const OTP_LENGTH = 6;
+const RESET_TOKEN_EXPIRY = 30 * 60; // 30 minutes in seconds
 
-// Reset token expiry time (30 minutes)
-const RESET_TOKEN_EXPIRY = 30 * 60 * 1000
+// Rate limiter configurations
+const RATE_LIMIT_POINTS = 3;
+const RATE_LIMIT_DURATION = 30 * 60; // 30 minutes in seconds
+
+// OTP rate limiters (email and IP-based)
+const otpEmailLimiter = new RateLimiterRedis({
+  storeClient: redis,
+  keyPrefix: "rl:otp:email",
+  points: RATE_LIMIT_POINTS,
+  duration: RATE_LIMIT_DURATION,
+});
+
+const otpIpLimiter = new RateLimiterRedis({
+  storeClient: redis,
+  keyPrefix: "rl:otp:ip",
+  points: RATE_LIMIT_POINTS,
+  duration: RATE_LIMIT_DURATION,
+});
+
+// Resend OTP rate limiters (email and IP-based)
+const resendOtpEmailLimiter = new RateLimiterRedis({
+  storeClient: redis,
+  keyPrefix: "rl:resendotp:email",
+  points: RATE_LIMIT_POINTS,
+  duration: RATE_LIMIT_DURATION,
+});
+
+const resendOtpIpLimiter = new RateLimiterRedis({
+  storeClient: redis,
+  keyPrefix: "rl:resendotp:ip",
+  points: RATE_LIMIT_POINTS,
+  duration: RATE_LIMIT_DURATION,
+});
+
+// Password reset rate limiters (email and IP-based)
+const passwordResetEmailLimiter = new RateLimiterRedis({
+  storeClient: redis,
+  keyPrefix: "rl:pwreset:email",
+  points: RATE_LIMIT_POINTS,
+  duration: RATE_LIMIT_DURATION,
+});
+
+const passwordResetIpLimiter = new RateLimiterRedis({
+  storeClient: redis,
+  keyPrefix: "rl:pwreset:ip",
+  points: RATE_LIMIT_POINTS,
+  duration: RATE_LIMIT_DURATION,
+});
+
+// Login rate limiters (email and IP-based)
+const loginEmailLimiter = new RateLimiterRedis({
+  storeClient: redis,
+  keyPrefix: "rl:login:email",
+  points: RATE_LIMIT_POINTS,
+  duration: RATE_LIMIT_DURATION,
+});
+
+const loginIpLimiter = new RateLimiterRedis({
+  storeClient: redis,
+  keyPrefix: "rl:login:ip",
+  points: RATE_LIMIT_POINTS,
+  duration: RATE_LIMIT_DURATION,
+});
 
 // Nodemailer Config
-let transporter
+let transporter;
 try {
   transporter = nodemailer.createTransport({
     service: "gmail",
@@ -28,206 +113,312 @@ try {
       user: process.env.EMAIL_USER,
       pass: process.env.EMAIL_PASS,
     },
-  })
+  });
 } catch (error) {
-  console.error("Email configuration error:", error)
+  logger.error("Email configuration error", { error: error.message });
+  throw new AppError("Email service not configured", 500, "EMAIL_CONFIG_ERROR");
 }
 
-// Helper function to validate email format
-const isValidEmail = (email) => {
-  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
-  return emailRegex.test(email)
-}
+// Helper: Validate email format
+const isValidEmail = (email) => validator.isEmail(email);
 
-// Helper function to generate and store OTP
-const generateAndStoreOTP = (email, userData = null) => {
-  // Generate OTP
+// Helper: Generate and store OTP in Redis
+const generateAndStoreOTP = async (email, userData = null) => {
   const otp = otpGenerator.generate(OTP_LENGTH, {
     digits: true,
     alphabets: false,
     specialChars: false,
     upperCaseAlphabets: false,
     lowerCaseAlphabets: false,
-  })
-
-  // Store OTP with expiration time
-  const expiryTime = Date.now() + OTP_EXPIRY_TIME
-
-  // Store OTP with user data if provided (for registration)
-  if (userData) {
-    otpStore.set(email, {
-      otp,
-      expiryTime,
-      ...userData,
-    })
-  } else {
-    // For resend, preserve existing user data if available
-    const existingData = otpStore.get(email)
-    otpStore.set(email, {
-      otp,
-      expiryTime,
-      ...(existingData && existingData.firstName
-        ? {
-            firstName: existingData.firstName,
-            lastName: existingData.lastName,
-            username: existingData.username,
-            password: existingData.password,
-            avatar: existingData.avatar,
-          }
-        : {}),
-    })
+  });
+  const expiryTime = Date.now() + OTP_EXPIRY_TIME * 1000;
+  const otpData = {
+    otp,
+    expiryTime,
+    ...(userData || {}),
+  };
+  try {
+    await redis.setEx(`otp:${email}`, OTP_EXPIRY_TIME, JSON.stringify(otpData));
+    logger.info("OTP stored in Redis", { email });
+  } catch (error) {
+    logger.error("Failed to store OTP in Redis", { email, error: error.message });
+    throw new AppError("Failed to store OTP", 500, "REDIS_ERROR");
   }
+  return otp;
+};
 
-  return otp
-}
-
-// Helper function to generate a secure random token
-const generateResetToken = () => {
-  return crypto.randomBytes(32).toString("hex")
-}
-
-// Helper function to send OTP email
+// Helper: Send OTP email
 const sendOTPEmail = async (email, otp) => {
   if (!transporter) {
-    throw new Error("Email service not configured")
+    throw new AppError("Email service not configured", 500, "EMAIL_CONFIG_ERROR");
   }
-
   try {
     await transporter.sendMail({
       from: process.env.EMAIL_USER,
       to: email,
-      subject: "Verify Your Account - OTP",
+      subject: "Your CareerOnDoor Verification Code",
       html: `
-        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #e0e0e0; border-radius: 5px;">
-          <h2 style="color: #0d9488; text-align: center;">Verify Your Account</h2>
-          <p style="margin-bottom: 20px;">Thank you for registering with CareerOnDoor. Please use the following verification code to complete your registration:</p>
-          <div style="background-color: #f0f9ff; padding: 15px; border-radius: 5px; text-align: center; font-size: 24px; letter-spacing: 5px; font-weight: bold; color: #0d9488; margin-bottom: 20px;">
-            ${otp}
-          </div>
-          <p style="margin-bottom: 5px;">This code will expire in 10 minutes.</p>
-          <p style="color: #666; font-size: 12px; margin-top: 30px; text-align: center;">If you didn't request this code, please ignore this email.</p>
-        </div>
+        <html>
+          <head>
+            <meta charset="UTF-8" />
+            <title>Verify Your Account - CareerOnDoor</title>
+            <style>
+              body {
+                font-family: Arial, sans-serif;
+                background-color: #f6f9fc;
+                margin: 0;
+                padding: 20px;
+              }
+              .container {
+                max-width: 600px;
+                margin: 0 auto;
+                background-color: #ffffff;
+                padding: 30px;
+                border: 1px solid #e0e0e0;
+                border-radius: 8px;
+                box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+              }
+              .header {
+                text-align: center;
+                color: #0d9488;
+              }
+              .otp-box {
+                background-color: #e6fffa;
+                padding: 20px;
+                border-radius: 6px;
+                text-align: center;
+                font-size: 28px;
+                font-weight: bold;
+                letter-spacing: 6px;
+                color: #0d9488;
+                margin: 30px 0;
+              }
+              .footer {
+                text-align: center;
+                font-size: 12px;
+                color: #999999;
+                margin-top: 40px;
+              }
+            </style>
+          </head>
+          <body>
+            <div class="container">
+              <h2 class="header">Verify Your Account</h2>
+              <p>Thank you for signing up with <strong>CareerOnDoor</strong>. To complete your registration, please enter the verification code below:</p>
+              <div class="otp-box">${otp}</div>
+              <p>This code will expire in 10 minutes.</p>
+              <p>If you didn’t request this code, you can safely ignore this email.</p>
+              <div class="footer">
+                CareerOnDoor © ${new Date().getFullYear()}<br />
+                You are receiving this email because you registered on our platform.
+              </div>
+            </div>
+          </body>
+        </html>
       `,
-    })
-    return true
+    });
+    logger.info("OTP email sent", { email });
+    return true;
   } catch (error) {
-    console.error("Error sending email:", error)
-    throw new Error("Failed to send verification email")
+    logger.error("Failed to send OTP email", { email, error: error.message });
+    throw new AppError("Failed to send verification email", 502, "EMAIL_SEND_FAILED");
   }
-}
+};
 
-// Helper function to send password reset email
+// Helper: Generate a secure random token
+const generateResetToken = () => crypto.randomBytes(32).toString("hex");
+
+// Helper: Store reset token in Redis
+const storeResetToken = async (email, token) => {
+  try {
+    await redis.setEx(
+      `reset:${email}`,
+      RESET_TOKEN_EXPIRY,
+      JSON.stringify({ token, expiryTime: Date.now() + RESET_TOKEN_EXPIRY * 1000 })
+    );
+    logger.info("Reset token stored in Redis", { email });
+  } catch (error) {
+    logger.error("Failed to store reset token in Redis", { email, error: error.message });
+    throw new AppError("Failed to store reset token", 500, "REDIS_ERROR");
+  }
+};
+
+// Helper: Send password reset email
 const sendResetEmail = async (email, token) => {
   if (!transporter) {
-    throw new Error("Email service not configured")
+    throw new AppError("Email service not configured", 500, "EMAIL_CONFIG_ERROR");
   }
-
-  const resetUrl = `${process.env.FRONTEND_URL || "http://localhost:3000"}/reset-password?token=${token}&email=${encodeURIComponent(email)}`
-
+  const resetUrl = `${process.env.FRONTEND_URL || "https://careerondoor.tech"}/reset-password?token=${token}&email=${encodeURIComponent(email)}`;
   try {
     await transporter.sendMail({
       from: process.env.EMAIL_USER,
       to: email,
-      subject: "Reset Your Password - CareerOnDoor",
+      subject: "Here’s the link to reset your CareerOnDoor password",
       html: `
-        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #e0e0e0; border-radius: 5px;">
-          <h2 style="color: #0d9488; text-align: center;">Reset Your Password</h2>
-          <p style="margin-bottom: 20px;">You requested a password reset for your CareerOnDoor account. Click the button below to set a new password:</p>
-          <div style="text-align: center; margin-bottom: 20px;">
-            <a href="${resetUrl}" style="background: linear-gradient(to right, #0d9488, #0369a1); color: white; padding: 12px 24px; text-decoration: none; border-radius: 5px; display: inline-block; font-weight: bold;">Reset Password</a>
-          </div>
-          <p style="margin-bottom: 5px;">This link will expire in 30 minutes.</p>
-          <p style="margin-bottom: 20px;">If you didn't request this password reset, you can safely ignore this email.</p>
-          <p style="color: #666; font-size: 12px; margin-top: 30px; text-align: center;">CareerOnDoor - Find your dream job</p>
-        </div>
+        <!DOCTYPE html>
+        <html>
+          <head>
+            <meta charset="UTF-8" />
+            <title>Reset Your Password - CareerOnDoor</title>
+            <style>
+              body {
+                font-family: Arial, sans-serif;
+                background-color: #f4f4f4;
+                margin: 0;
+                padding: 20px;
+              }
+              .container {
+                max-width: 600px;
+                margin: 0 auto;
+                background-color: #ffffff;
+                padding: 30px;
+                border-radius: 8px;
+                border: 1px solid #e0e0e0;
+                box-shadow: 0 2px 8px rgba(0, 0, 0, 0.05);
+              }
+              .header {
+                text-align: center;
+                color: #0d9488;
+              }
+              .button-container {
+                text-align: center;
+                margin: 30px 0;
+              }
+              .button-link {
+                background: linear-gradient(to right, #0d9488, #0369a1);
+                color: #0d9488;
+                text-decoration: none;
+                padding: 14px 28px;
+                font-weight: bold;
+                font-size: 16px;
+                border-radius: 5px;
+                display: inline-block;
+              }
+              .footer {
+                text-align: center;
+                font-size: 12px;
+                color: #888888;
+                margin-top: 40px;
+              }
+            </style>
+          </head>
+          <body>
+            <div class="container">
+              <h2 class="header">Reset Your Password</h2>
+              <p>Hello,</p>
+              <p>You requested to reset your CareerOnDoor account password. Please click the button below to proceed:</p>
+              <div class="button-container">
+                <a href="${resetUrl}" class="button-link" target="_blank">Reset Password</a>
+              </div>
+              <p>This link will expire in 30 minutes.</p>
+              <p>If you didn't request this, please ignore the email. No action will be taken.</p>
+              <div class="footer">
+                CareerOnDoor © ${new Date().getFullYear()}<br />
+                <a href="https://careerondoor.com" style="color: #0d9488; text-decoration: none;">www.careerondoor.com</a>
+              </div>
+            </div>
+          </body>
+        </html>
       `,
-    })
-    return true
+    });
+    logger.info("Reset email sent", { email });
+    return true;
   } catch (error) {
-    console.error("Error sending reset email:", error)
-    throw new Error("Failed to send password reset email")
+    logger.error("Failed to send reset email", { email, error: error.message });
+    await redis.del(`reset:${email}`);
+    throw new AppError("Failed to send reset email", 502, "EMAIL_SEND_FAILED");
   }
-}
+};
 
 // Register User & Send OTP
 exports.register = async (req, res) => {
   try {
-    const { firstName, lastName, username, email, password, avatar } = req.body
+    const { firstName, lastName, username, email, password, avatar } = req.body;
 
-    // Validate required fields
     if (!firstName || !lastName || !username || !email || !password || !avatar) {
-      return res.status(400).json({ message: "All fields are required" })
+      throw new AppError("All fields are required", 400, "MISSING_FIELDS");
     }
-
-    // Validate email format
     if (!isValidEmail(email)) {
-      return res.status(400).json({ message: "Invalid email format" })
+      throw new AppError("Invalid email format", 400, "INVALID_EMAIL");
     }
-
-    // Check if user already exists
-    const existingUser = await User.findOne({ email })
-    if (existingUser) {
-      return res.status(400).json({ message: "User already exists" })
-    }
-
-    // Check if username is taken
-    const existingUsername = await User.findOne({ username })
-    if (existingUsername) {
-      return res.status(400).json({ message: "Username already taken, try another one" })
-    }
-
-    // Password strength validation
     if (password.length < 6) {
-      return res.status(400).json({ message: "Password must be at least 6 characters long" })
+      throw new AppError("Password must be at least 6 characters long", 400, "WEAK_PASSWORD");
     }
 
-    // Generate OTP and store user data
-    const otp = generateAndStoreOTP(email, { firstName, lastName, username, password, avatar })
+    try {
+      await Promise.all([
+        otpEmailLimiter.consume(email),
+        otpIpLimiter.consume(req.ip),
+      ]);
+    } catch (error) {
+      logger.warn("Rate limit exceeded for OTP generation", { email, ip: req.ip });
+      throw new AppError(
+        `Too many OTP requests from this ${error.key.includes("email") ? "email" : "IP"}. Try again in ${Math.round(error.msBeforeNext / 1000)} seconds.`,
+        429,
+        "RATE_LIMIT_EXCEEDED"
+      );
+    }
 
-    // Send OTP email
-    await sendOTPEmail(email, otp)
+    const existingUser = await User.findOne({ email });
+    if (existingUser) {
+      throw new AppError("User already exists", 400, "USER_EXISTS");
+    }
 
-    res.status(200).json({ message: "OTP sent to email, verify to complete registration" })
+    const existingUsername = await User.findOne({ username });
+    if (existingUsername) {
+      throw new AppError("Username already taken", 400, "USERNAME_TAKEN");
+    }
+
+    const otp = await generateAndStoreOTP(email, { firstName, lastName, username, password, avatar });
+    await sendOTPEmail(email, otp);
+
+    res.status(200).json({ success: true, message: "OTP sent to email, verify to complete registration" });
   } catch (error) {
-    console.error("Registration error:", error)
-    res.status(500).json({ message: "Server error", error: error.message })
+    if (error.isOperational) {
+      res.status(error.statusCode).json({ success: false, message: error.message, code: error.code });
+    } else {
+      logger.error("Registration error", { email: req.body.email, error: error.message, stack: error.stack });
+      res.status(500).json({ success: false, message: "Server error", code: "SERVER_ERROR" });
+    }
   }
-}
+};
 
 // Verify OTP & Create User
 exports.verifyOTP = async (req, res) => {
   try {
-    const { email, otp } = req.body
+    const { email, otp } = req.body;
 
-    // Validate required fields
     if (!email || !otp) {
-      return res.status(400).json({ message: "Email and OTP are required" })
+      throw new AppError("Email and OTP are required", 400, "MISSING_FIELDS");
     }
 
-    // Check if OTP exists for this email
-    const storedData = otpStore.get(email)
-    if (!storedData) {
-      return res.status(400).json({ message: "OTP expired or not found. Please request a new one." })
+    let storedData;
+    try {
+      const storedDataStr = await redis.get(`otp:${email}`);
+      if (!storedDataStr) {
+        throw new AppError("OTP expired or not found. Request a new one.", 400, "OTP_NOT_FOUND");
+      }
+      storedData = JSON.parse(storedDataStr);
+    } catch (error) {
+      logger.error("Failed to retrieve OTP from Redis", { email, error: error.message });
+      throw new AppError("Failed to verify OTP", 500, "REDIS_ERROR");
     }
 
-    // Check if OTP is correct
     if (storedData.otp !== otp) {
-      return res.status(400).json({ message: "Invalid OTP. Please try again." })
+      throw new AppError("Invalid OTP", 400, "INVALID_OTP");
     }
 
-    // Check if OTP is expired
-    if (Date.now() > storedData.expiryTime) {
-      otpStore.delete(email)
-      return res.status(400).json({ message: "OTP expired. Please request a new one." })
+    if (!storedData.expiryTime || Date.now() > storedData.expiryTime) {
+      await redis.del(`otp:${email}`);
+      throw new AppError("OTP expired. Request a new one.", 400, "OTP_EXPIRED");
     }
 
-    // Check if we have all required user data
     if (!storedData.firstName || !storedData.lastName || !storedData.username || !storedData.password) {
-      return res.status(400).json({ message: "Registration data missing. Please sign up again." })
+      await redis.del(`otp:${email}`);
+      throw new AppError("Registration data missing. Sign up again.", 400, "MISSING_DATA");
     }
 
-    // Hash password and create user
-    const hashedPassword = await bcrypt.hash(storedData.password, 10)
+    const hashedPassword = await bcrypt.hash(storedData.password, 10);
     const newUser = await User.create({
       firstName: storedData.firstName,
       lastName: storedData.lastName,
@@ -235,26 +426,22 @@ exports.verifyOTP = async (req, res) => {
       email,
       avatar: storedData.avatar,
       password: hashedPassword,
-    })
+    });
 
-    // Remove OTP after successful verification
-    otpStore.delete(email)
+    await redis.del(`otp:${email}`);
 
-    // Generate JWT token
-    const token = jwt.sign({ id: newUser._id }, process.env.JWT_SECRET, {
-      expiresIn: "1h",
-    })
+    const token = jwt.sign({ id: newUser._id }, process.env.JWT_SECRET, { expiresIn: "6h" });
 
-    // Set HTTP-only cookie
     res.cookie("auth_token", token, {
       httpOnly: true,
-      secure: true,
-      sameSite: "None",
-      maxAge: 1 * 60 * 60 * 1000, // 1 hour
-    })
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "lax",
+      maxAge: 6 * 60 * 60 * 1000, // 6 hours
+    });
 
-    // Return user data
+    expiry=Date.now() + 6 * 60 * 60 * 1000; // 6 hours
     res.status(201).json({
+      success: true,
       message: "User registered successfully",
       user: {
         id: newUser._id,
@@ -264,212 +451,290 @@ exports.verifyOTP = async (req, res) => {
         email: newUser.email,
         avatar: newUser.avatar,
         admin: newUser.admin,
+        tokenExpiry: expiry,
       },
-    })
+    });
   } catch (error) {
-    console.error("OTP verification error:", error)
-    res.status(500).json({ message: "Server error", error: error.message })
+    if (error.isOperational) {
+      res.status(error.statusCode).json({ success: false, message: error.message, code: error.code });
+    } else {
+      logger.error("OTP verification error", { email: req.body.email, error: error.message, stack: error.stack });
+      res.status(500).json({ success: false, message: "Server error", code: "SERVER_ERROR" });
+    }
   }
-}
+};
 
 // Resend OTP
 exports.resendOTP = async (req, res) => {
   try {
-    const { email } = req.body
+    const { email } = req.body;
 
-    // Validate email
     if (!email) {
-      return res.status(400).json({ message: "Email is required" })
+      throw new AppError("Email is required", 400, "MISSING_EMAIL");
     }
-
     if (!isValidEmail(email)) {
-      return res.status(400).json({ message: "Invalid email format" })
+      throw new AppError("Invalid email format", 400, "INVALID_EMAIL");
     }
 
-    // Check if user exists in database (for existing users)
-    const existingUser = await User.findOne({ email })
-
-    // Check if we have stored data for this email (for new registrations)
-    const storedData = otpStore.get(email)
-
-    // If neither exists, user hasn't started registration
-    if (!existingUser && !storedData) {
-      return res.status(404).json({ message: "No registration found for this email" })
+    try {
+      await Promise.all([
+        resendOtpEmailLimiter.consume(email),
+        resendOtpIpLimiter.consume(req.ip),
+      ]);
+    } catch (error) {
+      logger.warn("Rate limit exceeded for OTP resend", { email, ip: req.ip });
+      throw new AppError(
+        `Too many OTP resend requests from this ${error.key.includes("email") ? "email" : "IP"}. Try again in ${Math.round(error.msBeforeNext / 1000)} seconds.`,
+        429,
+        "RATE_LIMIT_EXCEEDED"
+      );
     }
 
-    // If user already exists in database but not in OTP store, they're already verified
-    if (existingUser && !storedData) {
-      return res.status(400).json({ message: "Account already verified. Please login." })
+    const existingUser = await User.findOne({ email });
+    if (existingUser) {
+      throw new AppError("Account already verified. Please login.", 400, "ALREADY_VERIFIED");
     }
 
-    // Generate new OTP (this will preserve existing user data)
-    const otp = generateAndStoreOTP(email)
+    let storedData;
+    try {
+      const storedDataStr = await redis.get(`otp:${email}`);
+      if (!storedDataStr) {
+        throw new AppError("No registration found for this email", 404, "NO_REGISTRATION");
+      }
+      storedData = JSON.parse(storedDataStr);
+    } catch (error) {
+      logger.error("Failed to retrieve OTP from Redis", { email, email: error.message });
+      throw new AppError("Failed to resend OTP", 500, "REDIS_ERROR");
+    }
 
-    // Send OTP email
-    await sendOTPEmail(email, otp)
+    const otp = await generateAndStoreOTP(email, storedData);
+    await sendOTPEmail(email, otp);
 
-    res.status(200).json({ message: "New OTP sent to your email" })
+    res.status(200).json({ success: true, message: "New OTP sent to your email" });
   } catch (error) {
-    console.error("Resend OTP error:", error)
-    res.status(500).json({ message: "Server error", error: error.message })
+    if (error.isOperational) {
+      res.status(error.statusCode).json({ success: false, message: error.message, code: error.code });
+    } else {
+      logger.error("Resend OTP error", { email: req.body.email, error: error.message, stack: error.stack });
+      res.status(500).json({ success: false, message: "Server error", code: "SERVER_ERROR" });
+    }
   }
-}
+};
 
 // Forgot Password - Send reset link
 exports.forgotPassword = async (req, res) => {
   try {
-    const { email } = req.body
+    const { email } = req.body;
 
-    // Validate email
     if (!email) {
-      return res.status(400).json({ message: "Email is required" })
+      throw new AppError("Email is required", 400, "MISSING_EMAIL");
+    }
+    if (!isValidEmail(email)) {
+      throw new AppError("Invalid email format", 400, "INVALID_EMAIL");
     }
 
-    // Check if user exists
-    const user = await User.findOne({ email })
+    try {
+      await Promise.all([
+        passwordResetEmailLimiter.consume(email),
+        passwordResetIpLimiter.consume(req.ip),
+      ]);
+    } catch (errors) {
+      logger.warn("Rate limit exceeded for password reset", { email, ip: req.ip });
+      // Handle multiple errors from Promise.all
+      let msBeforeNext = 0;
+      let source = "source";
+      if (Array.isArray(errors)) {
+        // Multiple rate limit errors
+        const emailError = errors.find(err => err.key?.includes("email"));
+        const ipError = errors.find(err => err.key?.includes("ip"));
+        msBeforeNext = Math.max(
+          emailError?.msBeforeNext || 0,
+          ipError?.msBeforeNext || 0
+        );
+        source = emailError && ipError ? "email or IP" : emailError ? "email" : "IP";
+      } else {
+        // Single error
+        msBeforeNext = errors.msBeforeNext || RATE_LIMIT_DURATION * 1000;
+        source = errors.key?.includes("email") ? "email" : "IP";
+      }
+      throw new AppError(
+        `Too many password reset requests from this ${source}. Try again in ${Math.round(msBeforeNext / 1000)} seconds.`,
+        429,
+        "RATE_LIMIT_EXCEEDED"
+      );
+    }
+
+    const user = await User.findOne({ email });
     if (!user) {
-      // For security reasons, don't reveal that the user doesn't exist
-      return res.status(200).json({ message: "If your email is registered, you will receive a password reset link" })
+      logger.info("Password reset requested for non-existent email", { email, ip: req.ip });
+      return res.status(200).json({
+        success: true,
+        message: "If your email is registered, you will receive a password reset link",
+      });
     }
 
-    // Generate reset token
-    const resetToken = generateResetToken()
+    const resetToken = generateResetToken();
+    await storeResetToken(email, resetToken);
+    await sendResetEmail(email, resetToken);
 
-    // Store token with expiry time
-    resetTokenStore.set(email, {
-      token: resetToken,
-      expiryTime: Date.now() + RESET_TOKEN_EXPIRY,
-    })
-
-    // Send reset email
-    await sendResetEmail(email, resetToken)
-
-    // Return success message
-    res.status(200).json({ message: "Password reset link sent to your email" })
+    res.status(200).json({ success: true, message: "Password reset link sent to your email" });
   } catch (error) {
-    console.error("Forgot password error:", error)
-    res.status(500).json({ message: "Server error", error: error.message })
+    if (error.isOperational) {
+      res.status(error.statusCode).json({ success: false, message: error.message, code: error.code });
+    } else {
+      logger.error("Forgot password error", { email: req.body.email, error: error.message, stack: error.stack });
+      res.status(500).json({ success: false, message: "Server error", code: "SERVER_ERROR" });
+    }
   }
-}
+};
 
 // Validate Reset Token
 exports.validateResetToken = async (req, res) => {
   try {
-    const { email, token } = req.body
+    const { email, token } = req.body;
 
-    // Validate required fields
     if (!email || !token) {
-      return res.status(400).json({ message: "Email and token are required" })
+      throw new AppError("Email and token are required", 400, "MISSING_FIELDS");
     }
 
-    // Check if token exists and is valid
-    const storedData = resetTokenStore.get(email)
-    if (!storedData || storedData.token !== token) {
-      return res.status(400).json({ message: "Invalid or expired reset token" })
+    let storedData;
+    try {
+      const storedDataStr = await redis.get(`reset:${email}`);
+      if (!storedDataStr) {
+        throw new AppError("Invalid or expired reset token", 400, "INVALID_TOKEN");
+      }
+      storedData = JSON.parse(storedDataStr);
+    } catch (error) {
+      logger.error("Failed to retrieve reset token from Redis", { email, error: error.message });
+      throw new AppError("Failed to validate token", 500, "REDIS_ERROR");
     }
 
-    // Check if token is expired
+    if (storedData.token !== token) {
+      throw new AppError("Invalid or expired reset token", 400, "INVALID_TOKEN");
+    }
+
     if (Date.now() > storedData.expiryTime) {
-      resetTokenStore.delete(email)
-      return res.status(400).json({ message: "Reset token has expired" })
+      await redis.del(`reset:${email}`);
+      throw new AppError("Reset token has expired", 400, "TOKEN_EXPIRED");
     }
 
-    // Token is valid
-    res.status(200).json({ message: "Token is valid" })
+    res.status(200).json({ success: true, message: "Token is valid" });
   } catch (error) {
-    console.error("Validate reset token error:", error)
-    res.status(500).json({ message: "Server error", error: error.message })
+    if (error.isOperational) {
+      res.status(error.statusCode).json({ success: false, message: error.message, code: error.code });
+    } else {
+      logger.error("Validate reset token error", { email: req.body.email, error: error.message, stack: error.stack });
+      res.status(500).json({ success: false, message: "Server error", code: "SERVER_ERROR" });
+    }
   }
-}
+};
 
 // Reset Password
 exports.resetPassword = async (req, res) => {
   try {
-    const { email, token, password } = req.body
+    const { email, token, password } = req.body;
 
-    // Validate required fields
     if (!email || !token || !password) {
-      return res.status(400).json({ message: "Email, token, and password are required" })
+      throw new AppError("Email, token, and password are required", 400, "MISSING_FIELDS");
     }
 
-    // Check if token exists and is valid
-    const storedData = resetTokenStore.get(email)
-    if (!storedData || storedData.token !== token) {
-      return res.status(400).json({ message: "Invalid or expired reset token" })
+    let storedData;
+    try {
+      const storedDataStr = await redis.get(`reset:${email}`);
+      if (!storedDataStr) {
+        throw new AppError("Invalid or expired reset token", 400, "INVALID_TOKEN");
+      }
+      storedData = JSON.parse(storedDataStr);
+    } catch (error) {
+      logger.error("Failed to retrieve reset token from Redis", { email, error: error.message });
+      throw new AppError("Failed to reset password", 500, "REDIS_ERROR");
     }
 
-    // Check if token is expired
+    if (storedData.token !== token) {
+      throw new AppError("Invalid or expired reset token", 400, "INVALID_TOKEN");
+    }
+
     if (Date.now() > storedData.expiryTime) {
-      resetTokenStore.delete(email)
-      return res.status(400).json({ message: "Reset token has expired" })
+      await redis.del(`reset:${email}`);
+      throw new AppError("Reset token has expired", 400, "TOKEN_EXPIRED");
     }
 
-    // Find user
-    const user = await User.findOne({ email })
+    const user = await User.findOne({ email });
     if (!user) {
-      return res.status(404).json({ message: "User not found" })
+      throw new AppError("User not found", 404, "USER_NOT_FOUND");
     }
 
-    // Validate password
     if (password.length < 6) {
-      return res.status(400).json({ message: "Password must be at least 6 characters long" })
+      throw new AppError("Password must be at least 6 characters long", 400, "WEAK_PASSWORD");
     }
 
-    // Hash new password
-    const hashedPassword = await bcrypt.hash(password, 10)
+    const hashedPassword = await bcrypt.hash(password, 10);
+    user.password = hashedPassword;
+    await user.save();
 
-    // Update user's password
-    user.password = hashedPassword
-    await user.save()
+    await redis.del(`reset:${email}`);
 
-    // Remove token after successful reset
-    resetTokenStore.delete(email)
-
-    // Return success message
-    res.status(200).json({ message: "Password reset successful" })
+    res.status(200).json({ success: true, message: "Password reset successful" });
   } catch (error) {
-    console.error("Reset password error:", error)
-    res.status(500).json({ message: "Server error", error: error.message })
+    if (error.isOperational) {
+      res.status(error.statusCode).json({ success: false, message: error.message, code: error.code });
+    } else {
+      logger.error("Reset password error", { email: req.body.email, error: error.message, stack: error.stack });
+      res.status(500).json({ success: false, message: "Server error", code: "SERVER_ERROR" });
+    }
   }
-}
+};
 
 // Login User
 exports.login = async (req, res) => {
   try {
-    const { email, password } = req.body
+    const { email, password } = req.body;
 
-    // Validate required fields
     if (!email || !password) {
-      return res.status(400).json({ message: "Email and password are required" })
+      throw new AppError("Email and password are required", 400, "MISSING_FIELDS");
     }
 
-    // Find user
-    const user = await User.findOne({ email })
+    try {
+      await Promise.all([
+        loginEmailLimiter.consume(email),
+        loginIpLimiter.consume(req.ip),
+      ]);
+    } catch (error) {
+      logger.warn("Rate limit exceeded for login", { email, ip: req.ip });
+      throw new AppError(
+        `Too many login attempts from this ${error.key.includes("email") ? "email" : "IP"}. Try again in ${Math.round(error.msBeforeNext / 1000)} seconds.`,
+        429,
+        "RATE_LIMIT_EXCEEDED"
+      );
+    }
+
+    const user = await User.findOne({ email });
     if (!user) {
-      return res.status(404).json({ message: "User not found" })
+      throw new AppError("User not found", 404, "USER_NOT_FOUND");
     }
 
-    // Verify password
-    const isMatch = await bcrypt.compare(password, user.password)
+    const isMatch = await bcrypt.compare(password, user.password);
     if (!isMatch) {
-      return res.status(400).json({ message: "Invalid credentials" })
+      throw new AppError("Invalid credentials", 400, "INVALID_CREDENTIALS");
     }
 
-    // Generate JWT token
-    const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET, {
-      expiresIn: "1h",
-    })
+    await Promise.all([
+      loginEmailLimiter.delete(email),
+      loginIpLimiter.delete(req.ip),
+    ]);
 
-    // Set HTTP-only cookie
+    const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET, { expiresIn: "6h" });
+
     res.cookie("auth_token", token, {
       httpOnly: true,
-      secure: true,
-      sameSite: "None",
-      maxAge: 1 * 60 * 60 * 1000, // 2 hour
-    })
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "lax",
+      maxAge: 6 * 60 * 60 * 1000, // 6 hours
+    });
+    expiry=Date.now() + 6 * 60 * 60 * 1000; // 6 hours
 
-    // Return user data
     res.status(200).json({
+      success: true,
       message: "Login successful",
       user: {
         id: user._id,
@@ -479,49 +744,30 @@ exports.login = async (req, res) => {
         email: user.email,
         avatar: user.avatar,
         admin: user.admin,
+        tokenExpiry: expiry,
       },
-    })
+    });
   } catch (error) {
-    console.error("Login error:", error)
-    res.status(500).json({ message: "Server error", error: error.message })
+    if (error.isOperational) {
+      res.status(error.statusCode).json({ success: false, message: error.message, code: error.code });
+    } else {
+      logger.error("Login error", { email: req.body.email, error: error.message, stack: error.stack });
+      res.status(500).json({ success: false, message: "Server error", code: "SERVER_ERROR" });
+    }
   }
-}
+};
 
 // Logout User
 exports.logout = (req, res) => {
   try {
-    // Clear auth cookie
-    res.clearCookie("auth_token")
-    res.status(200).json({ message: "Logged out successfully" })
+    res.clearCookie("auth_token", {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: "lax",
+    });
+    res.status(200).json({ success: true, message: "Logged out successfully" });
   } catch (error) {
-    console.error("Logout error:", error)
-    res.status(500).json({ message: "Server error", error: error.message })
+    logger.error("Logout error", { error: error.message, stack: error.stack });
+    res.status(500).json({ success: false, message: "Server error", code: "SERVER_ERROR" });
   }
-}
-
-// Cleanup expired OTPs periodically
-setInterval(
-  () => {
-    const now = Date.now()
-    for (const [email, data] of otpStore.entries()) {
-      if (data.expiryTime && now > data.expiryTime) {
-        otpStore.delete(email)
-      }
-    }
-  },
-  15 * 60 * 1000,
-) // Run every 15 minutes
-
-// Cleanup expired reset tokens periodically
-setInterval(
-  () => {
-    const now = Date.now()
-    for (const [email, data] of resetTokenStore.entries()) {
-      if (data.expiryTime && now > data.expiryTime) {
-        resetTokenStore.delete(email)
-      }
-    }
-  },
-  15 * 60 * 1000,
-) // Run every 15 minutes
-
+};

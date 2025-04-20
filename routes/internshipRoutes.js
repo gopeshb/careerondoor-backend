@@ -3,20 +3,17 @@ const router = express.Router()
 const internshipController = require("../controllers/internship-controller")
 const { protect } = require("../middlewares/authMiddleware");
 
-// GET /api/internships - Get all internships with filtering, searching, and pagination
+
 router.get("/", internshipController.getInternships)
-
-// GET /api/internships/:id - Get internship by ID
-router.get("/:id", internshipController.getInternshipById)
-
-// POST /api/internships - Create a new internship (admin only)
 router.post("/", protect, internshipController.createInternship)
+router.get("/locations", internshipController.getLocations);
+router.get("/verify", protect,internshipController.getInternshipsForVerification);
 
-// PUT /api/internships/:id - Update an internship (admin only)
-router.put("/:id", protect, internshipController.updateInternship)
+router.patch("/:id/verify", protect, internshipController.verifyInternship);
 
-// DELETE /api/internships/:id - Delete an internship (admin only)
+router.get("/:id", internshipController.getInternshipById)
 router.delete("/:id", protect, internshipController.deleteInternship)
+
 
 module.exports = router
 

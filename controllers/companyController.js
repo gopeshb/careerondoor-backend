@@ -244,3 +244,72 @@ exports.verifyCompany = async (req, res) => {
   }
 };
 
+const extractCompanyNameFromUrl = (url) => {
+  if (!url) return null;
+  try {
+    const parsedUrl = new URL(url.trim());
+    const hostname = parsedUrl.hostname.replace(/^www\./, '').split('.')[0];
+    return hostname.length > 0 ? hostname : null;
+  } catch (error) {
+    return url.trim(); // Fallback to raw URL if parsing fails
+  }
+};
+
+
+exports.addCompany = async (req, res) => {
+  try {
+    const { companyName, companyWebsite } = req.body;
+
+    // Input validation
+    if (!companyName || !companyWebsite) {
+      return res.status(400).json({ message: "Both companyName and companyWebsite are required" });
+    }
+
+    // Sanitize inputs
+    const sanitizedName = companyName.trim();
+    const sanitizedWebsite = companyWebsite.trim();
+    if (sanitizedName.length === 0 || sanitizedWebsite.length === 0) {
+      return res.status(400).json({ message: "Company name and website must not be empty after trimming" });
+    }
+
+    // Validate website as HTTPS
+    const httpsRegex = /^https:\/\/[^\s/$.?#].[^\s]*$/;
+    if (!httpsRegex.test(sanitizedWebsite)) {
+      return res.status(400).json({ message: "Website must be a valid HTTPS URL", example: "https://example.com" });
+    }
+
+    // Extract company name from website
+    const urlDerivedName = extractCompanyNameFromUrl(sanitizedWebsite);
+
+    // Check for existing company by name or URL-derived name
+    const existingCompany = await Company.findOne({
+      $or: [
+        { name: { $regex: new RegExp(`^${sanitizedName}$`, 'i') } },
+        urlDerivedName ? { name: { $regex: new RegExp(`^${urlDerivedName}$`, 'i') } } : null,
+      ].filter(Boolean), // Filter out null conditions
+    }).lean();
+
+    if (existingCompany) {
+      return res.status(409).json({ message: `Company already exists: ${existingCompany.name}` });
+    }
+
+    // Create new company
+    const company = await Company.create({
+      name: sanitizedName,
+      website: sanitizedWebsite,
+    });
+
+    res.status(201).json({
+      message: "Company created successfully",
+      company: {
+        id: company._id,
+        name: company.name,
+        website: company.website,
+        createdAt: company.createdAt,
+      },
+    });
+  } catch (error) {
+    console.error("Error adding company:", error); // Basic logging for production
+    res.status(500).json({ message: "Internal server error while creating company" });
+  }
+};

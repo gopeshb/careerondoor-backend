@@ -3,7 +3,7 @@ const mongoose = require("mongoose");
 const JobSchema = new mongoose.Schema(
   {
     role: { type: String, required: true, trim: true },
-    min_experience: { type: Number, min: 0, default: 0 }, // Default to 0 for entry-level jobs
+    min_experience: { type: Number, min: 0, default: 0 },
     max_experience: { 
       type: Number, 
       min: 0, 
@@ -15,25 +15,28 @@ const JobSchema = new mongoose.Schema(
       },
     },
     country: { type: String, required: true, trim: true },
-    cities: { 
-      type: [{ type: String, trim: true }], 
-      default: [] 
-    },
-    remote: { type: Boolean, default: false }, // New field for remote jobs
-    skills_required: { type: [String], default: [] }, // Optional for entry-level jobs
+    cities: { type: [{ type: String, trim: true }], default: [] },
+    remote: { type: Boolean, default: false },
+    skills_required: { type: [String], default: [] },
     companyId: { 
       type: mongoose.Types.ObjectId, 
       ref: "Company", 
       required: true, 
       index: true 
     },
-    min_salary: { type: Number, min: 0 }, // Salary stored as numbers
+    userId: { 
+      type: mongoose.Types.ObjectId, 
+      ref: "User", 
+      required: true, 
+      index: true 
+    },
+    min_salary: { type: Number, min: 0 },
     max_salary: { type: Number, min: 0 },
-    currency: { type: String, trim: true, default: "INR" }, // Default currency
+    currency: { type: String, trim: true, default: "INR" },
     applylink: { type: String, required: true, trim: true },
     last_date: { type: Date, required: true },
-    description: { type: String, required: true, trim: true, maxlength: 250 }, // Extended max length
-    verified: { type: Boolean, default: false }, // New field for job verification
+    description: { type: String, required: true, trim: true, maxlength: 250 },
+    verified: { type: Boolean, default: false },
   },
   { timestamps: true }
 );
@@ -43,4 +46,3 @@ JobSchema.index({ last_date: 1 }, { expireAfterSeconds: 0 });
 
 const Job = mongoose.model("Job", JobSchema);
 module.exports = Job;
-

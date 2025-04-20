@@ -9,7 +9,8 @@ const {
   getTopCompaniesByWorkEnv,
   searchCompanies,
   deleteCompany, 
-  verifyCompany
+  verifyCompany,
+  addCompany
 } = require("../controllers/companyController");
 
 const { protect } = require("../middlewares/authMiddleware");
@@ -36,4 +37,7 @@ router.get("/", searchCompanies);
 router.delete("/:id", protect ,deleteCompany);    
 // update verify          
 router.put("/verify/:id/", protect ,verifyCompany);
+
+router.post("/",protect, addCompany);
+
 module.exports = router;
