@@ -435,7 +435,7 @@ exports.verifyOTP = async (req, res) => {
     res.cookie("auth_token", token, {
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",
-      sameSite: "lax",
+      sameSite:"none",
       maxAge: 6 * 60 * 60 * 1000, // 6 hours
     });
 
@@ -728,7 +728,7 @@ exports.login = async (req, res) => {
     res.cookie("auth_token", token, {
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",
-      sameSite: "lax",
+      sameSite: "none",
       maxAge: 6 * 60 * 60 * 1000, // 6 hours
     });
     expiry=Date.now() + 6 * 60 * 60 * 1000; // 6 hours
@@ -763,7 +763,7 @@ exports.logout = (req, res) => {
     res.clearCookie("auth_token", {
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",
-      sameSite: "lax",
+      sameSite:"none",
     });
     res.status(200).json({ success: true, message: "Logged out successfully" });
   } catch (error) {
